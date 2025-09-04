@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Field Employee Expense Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // IMPORTANT: Global variables are provided by the canvas environment.
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, userId;
+
+        const glCodeMap = {
+            "AUTO - ALLOWANCE": "6020",
+            "AUTO - FUEL": "6018",
+            "AUTO - MILEAGE": "6019",
+            "AUTO - REPAIRS & MAINTENANCE": "6021",
+            "DUE FROM EMPLOYEES": "1023",
+            "DUES & SUBSCRIPTIONS": "6051",
+            "ENTERTAINMENT": "6056",
+            "LABOR FOR JOBS": "5002",
+            "MATERIAL FOR JOBS": "5001",
+            "MEETINGS & SEMINARS": "6110",
+            "MISC": "6111",
+            "OFFICE": "6121",
+            "PHONE": "6181",
+            "SUPPLIES": "6156",
+            "TRAINING": "6054",
+            "TRAVEL": "6191",
+            "UNIFORMS": "6196"
+        };
+        
+        const updateGlCode = () => {
+            const category = document.getElementById('category').value;
+            const glCodeField = document.getElementById('gl-code');
+            glCodeField.value = glCodeMap[category] || '';
+        };
+
+        const formatDate = (timestamp) => {
+            if (!timestamp || !timestamp.toDate) return 'Date Unavailable';
+            const date = timestamp.toDate();
+            const options = { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' };
+            return date.toLocaleDateString('en-US', options);
+        };
+
+        const renderExpenses = (expenses) => {
+            const expenseList = document.getElementById('expense-list');
+            expenseList.innerHTML = '';
+            if (expenses.length === 0) {
+                expenseList.innerHTML = '<p class="text-center text-gray-500 mt-4">No expenses recorded yet.</p>';
+                return;
+            }
+
+            expenses.forEach(expense => {
+                const expenseElement = document.createElement('div');
+                expenseElement.classList.add('bg-gray-100', 'p-4', 'rounded-lg', 'shadow-sm', 'mb-3', 'flex', 'flex-col', 'gap-2');
+                
+                let receiptImageHtml = '';
+                if (expense.receiptImage) {
+                    receiptImageHtml = `
+                        <div class="mt-2">
+                            <img src="${expense.receiptImage}" alt="Receipt image" class="rounded-md w-full max-h-48 object-contain cursor-pointer" onclick="showReceiptModal('${expense.receiptImage}')">
+                        </div>
+                    `;
+                }
+                
+                let jobNumberHtml = '';
+                if (expense.jobNumber) {
+                    jobNumberHtml = `<p class="text-sm text-gray-500 mt-1">Job Number: ${expense.jobNumber}</p>`;
+                }
+
+                let glCodeHtml = '';
+                if (expense.glCode) {
+                    glCodeHtml = `<p class="text-sm text-gray-500 mt-1">GL Code: ${expense.glCode}</p>`;
+                }
+
+                expenseElement.innerHTML = `
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-xs text-gray-500">${formatDate(expense.timestamp)}</p>
+                            <h3 class="text-lg font-semibold text-gray-800">${expense.description || 'No Description'}</h3>
+                            <p class="text-sm font-medium text-indigo-600">Category: ${expense.category}</p>
+                            ${glCodeHtml}
+                            ${jobNumberHtml}
+                            <p class="text-sm text-gray-500 mt-1">Submitted by: ${expense.userId}</p>
+                        </div>
+                        <div class="flex flex-col items-end">
+                            <span class="text-2xl font-bold text-gray-900">$${expense.amount.toFixed(2)}</span>
+                            <button class="delete-btn text-red-500 hover:text-red-700 transition-colors duration-200 mt-2" data-id="${expense.id}" aria-label="Delete expense">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm6 0a1 1 0 112 0v6a1 1 0 11-2 0V8z" clip-rule="evenodd" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    ${receiptImageHtml}
+                `;
+                expenseList.appendChild(expenseElement);
+            });
+            document.querySelectorAll('.delete-btn').forEach(button => {
+                button.addEventListener('click', async (event) => {
+                    const docId = event.currentTarget.getAttribute('data-id');
+                    if (docId) {
+                        try {
+                            const expenseDocRef = doc(db, `artifacts/${appId}/public/data/expenses`, docId);
+                            await deleteDoc(expenseDocRef);
+                        } catch (e) {
+                            console.error("Error removing document: ", e);
+                        }
+                    }
+                });
+            });
+        };
+        
+        // Custom modal for displaying receipts
+        window.showReceiptModal = (imageUrl) => {
+            const modal = document.getElementById('receipt-modal');
+            const modalImage = document.getElementById('modal-image');
+            modalImage.src = imageUrl;
+            modal.classList.remove('hidden');
+        };
+
+        window.hideReceiptModal = () => {
+            const modal = document.getElementById('receipt-modal');
+            modal.classList.add('hidden');
+        };
+
+        const setupFirestoreListener = () => {
+            const expensesRef = collection(db, `artifacts/${appId}/public/data/expenses`);
+            const q = query(expensesRef, orderBy('timestamp', 'desc'));
+
+            onSnapshot(q, (snapshot) => {
+                const expenses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderExpenses(expenses);
+                
+                // Calculate and display the total
+                const total = expenses.reduce((sum, expense) => sum + expense.amount, 0);
+                document.getElementById('total-expenses').textContent = `Total: $${total.toFixed(2)}`;
+
+            }, (error) => {
+                console.error("Error getting documents: ", error);
+            });
+        };
+
+        const setupApp = async () => {
+            if (!firebaseConfig) {
+                console.error('Firebase configuration not found. Please provide firebaseConfig.');
+                document.getElementById('app-container').innerHTML = '<p class="text-center text-red-500">Error: Firebase configuration missing.</p>';
+                return;
+            }
+
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                userId = auth.currentUser.uid;
+                document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
+
+                setupFirestoreListener();
+                updateGlCode(); // Set initial GL code
+
+                document.getElementById('expense-form').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const amount = parseFloat(document.getElementById('amount').value);
+                    const category = document.getElementById('category').value;
+                    const description = document.getElementById('description').value;
+                    const glCode = document.getElementById('gl-code').value;
+                    const date = document.getElementById('date').value;
+                    const jobNumber = document.getElementById('job-number').value;
+                    const receiptFile = document.getElementById('receipt-image').files[0];
+                    
+                    if (isNaN(amount) || amount <= 0) {
+                        // TODO: Use a custom modal instead of alert
+                        console.error('Please enter a valid amount.');
+                        return;
+                    }
+                    if (!receiptFile) {
+                        console.error('Please upload a receipt image.');
+                        return;
+                    }
+
+
+                    let receiptImage = null;
+                    if (receiptFile) {
+                         // Check file size (1MB limit for Firestore document)
+                        if (receiptFile.size > 1024 * 1024) {
+                            console.error('File is too large. Max size is 1MB.');
+                            return;
+                        }
+                        receiptImage = await new Promise((resolve) => {
+                            const reader = new FileReader();
+                            reader.onload = (event) => resolve(event.target.result);
+                            reader.readAsDataURL(receiptFile);
+                        });
+                    }
+
+                    const newExpense = {
+                        amount: amount,
+                        category: category,
+                        glCode: glCode,
+                        description: description,
+                        date: date,
+                        timestamp: new Date(),
+                        userId: userId,
+                        jobNumber: jobNumber,
+                        receiptImage: receiptImage
+                    };
+
+                    try {
+                        const expensesRef = collection(db, `artifacts/${appId}/public/data/expenses`);
+                        await addDoc(expensesRef, newExpense);
+                        document.getElementById('expense-form').reset();
+                    } catch (e) {
+                        console.error("Error adding document: ", e);
+                    }
+                });
+            } catch (error) {
+                console.error("Failed to initialize Firebase or sign in:", error);
+            }
+        };
+
+        window.onload = setupApp;
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .container {
+            max-width: 600px;
+        }
+        .modal {
+            background-color: rgba(0, 0, 0, 0.7);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 flex items-center justify-center min-h-screen p-4 sm:p-6">
+    <div id="app-container" class="container bg-white rounded-2xl shadow-xl p-6 sm:p-8 w-full">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl font-bold text-gray-800">Expense Tracker</h1>
+            <p class="text-gray-500 mt-1">Record and view team expenses in real-time.</p>
+            <div id="user-id-display" class="text-xs text-gray-400 mt-2 break-all">Authenticating...</div>
+        </header>
+        
+        <div class="grid grid-cols-1 md:grid-cols-1 gap-6">
+            <!-- Expense Submission Form -->
+            <section class="bg-indigo-50 p-6 rounded-xl shadow-md">
+                <h2 class="text-xl font-semibold text-indigo-800 mb-4">Add New Expense</h2>
+                <form id="expense-form" class="space-y-4">
+                    <div>
+                        <label for="amount" class="block text-sm font-medium text-gray-700">Amount ($)</label>
+                        <input type="number" id="amount" step="0.01" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 transition-colors">
+                    </div>
+                    <div>
+                        <label for="category" class="block text-sm font-medium text-gray-700">Category</label>
+                        <select id="category" onchange="updateGlCode()" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 transition-colors">
+                            <option value="AUTO - ALLOWANCE">AUTO - ALLOWANCE</option>
+                            <option value="AUTO - FUEL">AUTO - FUEL</option>
+                            <option value="AUTO - MILEAGE">AUTO - MILEAGE</option>
+                            <option value="AUTO - REPAIRS & MAINTENANCE">AUTO - REPAIRS & MAINTENANCE</option>
+                            <option value="DUE FROM EMPLOYEES">DUE FROM EMPLOYEES</option>
+                            <option value="DUES & SUBSCRIPTIONS">DUES & SUBSCRIPTIONS</option>
+                            <option value="ENTERTAINMENT">ENTERTAINMENT</option>
+                            <option value="LABOR FOR JOBS">LABOR FOR JOBS</option>
+                            <option value="MATERIAL FOR JOBS">MATERIAL FOR JOBS</option>
+                            <option value="MEETINGS & SEMINARS">MEETINGS & SEMINARS</option>
+                            <option value="MISC">MISC</option>
+                            <option value="OFFICE">OFFICE</option>
+                            <option value="PHONE">PHONE</option>
+                            <option value="SUPPLIES">SUPPLIES</option>
+                            <option value="TRAINING">TRAINING</option>
+                            <option value="TRAVEL">TRAVEL</option>
+                            <option value="UNIFORMS">UNIFORMS</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="gl-code" class="block text-sm font-medium text-gray-700">GL Code</label>
+                        <input type="text" id="gl-code" readonly class="mt-1 block w-full rounded-md border-gray-300 bg-gray-200 shadow-sm focus:border-indigo-500 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 transition-colors">
+                    </div>
+                    <div>
+                        <label for="description" class="block text-sm font-medium text-gray-700">Description</label>
+                        <textarea id="description" rows="2" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 transition-colors"></textarea>
+                    </div>
+                    <div>
+                        <label for="job-number" class="block text-sm font-medium text-gray-700">Job Number</label>
+                        <input type="text" id="job-number" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 transition-colors">
+                    </div>
+                    <div>
+                        <label for="date" class="block text-sm font-medium text-gray-700">Date</label>
+                        <input type="date" id="date" required class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 transition-colors">
+                    </div>
+                    <div>
+                        <label for="receipt-image" class="block text-sm font-medium text-gray-700">Upload Receipt (Optional)</label>
+                        <input type="file" id="receipt-image" accept="image/*" required class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 transition-colors">
+                    </div>
+                    <button type="submit" class="w-full py-3 px-4 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors duration-200">
+                        Add Expense
+                    </button>
+                </form>
+            </section>
+            
+            <!-- Expense List -->
+            <section class="mt-6">
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">Recent Expenses</h2>
+                <div id="total-expenses" class="text-center text-xl font-bold text-gray-900 mb-4"></div>
+                <div id="expense-list" class="space-y-4">
+                    <p class="text-center text-gray-500 mt-4">Loading expenses...</p>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- Receipt Modal -->
+    <div id="receipt-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 modal">
+        <div class="relative bg-white rounded-lg shadow-xl max-w-lg mx-auto overflow-hidden">
+            <button onclick="hideReceiptModal()" class="absolute top-2 right-2 text-gray-500 hover:text-gray-700 transition-colors duration-200" aria-label="Close modal">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+            <img id="modal-image" src="" alt="Full-size receipt" class="w-full h-auto object-contain">
+        </div>
+    </div>
+</body>
+</html>
